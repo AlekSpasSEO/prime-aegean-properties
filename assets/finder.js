@@ -150,6 +150,228 @@ export function containsContactDetails(note) {
   return email.test(note) || link.test(note) || phone.test(note);
 }
 
+const phoneMethods = new Set(['phone', 'whatsapp', 'viber', 'phone call']);
+const emailShape = /^[^\s<>,;:"@]+@[a-z\d](?:[a-z\d-]*[a-z\d])?(?:\.[a-z\d](?:[a-z\d-]*[a-z\d])?)+$/iu;
+
+export function validateBuyer(buyer, method) {
+  if (!buyer.name || buyer.name.length > 100 || /[\r\n]/u.test(buyer.name)) {
+    return { field: 'name', message: 'Enter your name, using up to 100 characters.' };
+  }
+  if (buyer.email.length > 254 || !emailShape.test(buyer.email) || buyer.email.split('.').at(-1).length < 2) {
+    return { field: 'email', message: 'Enter an email address where we can reach you.' };
+  }
+  if (phoneMethods.has(normalize(method)) && !buyer.phone) {
+    return { field: 'phone', message: 'Enter a phone number for your preferred contact method.' };
+  }
+  if (buyer.phone) {
+    const digits = buyer.phone.replace(/\D/gu, '');
+    if (buyer.phone.length > 32 || !/^\+?[\d\s().-]+$/u.test(buyer.phone) ||
+        digits.length < 7 || digits.length > 15) {
+      return { field: 'phone', message: 'Enter a phone number with 7 to 15 digits.' };
+    }
+  }
+  return null;
+}
+
+async function requestInquiry(endpoint, options, timeout) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeout);
+  try {
+    const response = await fetch(endpoint, {
+      ...options,
+      credentials: 'omit',
+      cache: 'no-store',
+      redirect: 'error',
+      referrerPolicy: 'no-referrer',
+      signal: controller.signal
+    });
+    const result = await response.json().catch(() => null);
+    return { response, result, timedOut: controller.signal.aborted };
+  } catch {
+    return { timedOut: controller.signal.aborted };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+export async function checkInquiryAvailability(endpoint, timeout = 6000) {
+  const { response, result } = await requestInquiry(endpoint, { method: 'GET' }, timeout);
+  return response?.ok === true && result?.ok === true && result.available === true;
+}
+
+export async function postInquiry(endpoint, payload, timeout = 15000) {
+  const { response, result, timedOut } = await requestInquiry(endpoint, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload)
+  }, timeout);
+  if (timedOut) return 'timeout';
+  if (response?.ok && result?.ok === true) return 'sent';
+  if (response?.status === 429 || result?.error === 'rate_limited') return 'rate_limited';
+  if (response?.status === 400 || response?.status === 422 || result?.error === 'invalid') return 'invalid';
+  if (response?.status === 409) return 'pending';
+  if (result?.error === 'delivery_unknown') return 'delivery_unknown';
+  return 'unavailable';
+}
+
+function inquiryEndpoint(value) {
+  if (!value) return null;
+  try {
+    const url = new URL(value, document.baseURI);
+    const loopback = url.protocol === 'http:' && url.origin === location.origin &&
+      ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname);
+    if ((!loopback && url.protocol !== 'https:') || url.username || url.password ||
+        url.search || url.hash) return null;
+    return url.href;
+  } catch {
+    return null;
+  }
+}
+
+function propertyReferences(results) {
+  return [...new Set(results.map(result => String(result.property.reference ?? '').trim()).filter(Boolean))];
+}
+
+function setupInquiry(root, editButton) {
+  const form = root.querySelector('[data-inquiry-form]');
+  if (!form) return null;
+  const endpoint = inquiryEndpoint(root.dataset.endpoint);
+  const fields = form.querySelector('[data-inquiry-fields]');
+  const button = form.querySelector('[data-inquiry-send]');
+  const phoneLabel = form.querySelector('[data-phone-label]');
+  const error = root.querySelector('[data-inquiry-error]');
+  const status = root.querySelector('[data-inquiry-status]');
+  if (!endpoint || !fields || !button || !phoneLabel || !error || !status || !globalThis.crypto?.randomUUID) {
+    if (status) status.textContent = 'Sending is unavailable. You can still copy or download your brief.';
+    return null;
+  }
+
+  const name = form.elements.namedItem('name');
+  const email = form.elements.namedItem('email');
+  const phone = form.elements.namedItem('phone');
+  const website = form.elements.namedItem('website');
+  const errorMessages = {
+    invalid: 'Check your contact details and quiz answers, then try again.',
+    rate_limited: 'Too many requests were sent recently. Wait a minute and try again.',
+    pending: 'Your last request may still be processing. Wait a moment and try again.',
+    timeout: 'The request timed out. Try again in a moment to check its status.',
+    delivery_unknown: 'We couldn’t confirm delivery. Copy or download your brief to keep it.',
+    unavailable: 'Sending is temporarily unavailable. Try again or download your brief.'
+  };
+  let context;
+  let contextKey = '';
+  let lastRequest;
+  let checking = false;
+  let available = false;
+  let sending = false;
+  let sent = false;
+  let invalidField;
+  let previousDescription;
+
+  function clearError() {
+    error.hidden = true;
+    error.textContent = '';
+    if (!invalidField) return;
+    invalidField.removeAttribute('aria-invalid');
+    if (previousDescription) invalidField.setAttribute('aria-describedby', previousDescription);
+    else invalidField.removeAttribute('aria-describedby');
+    invalidField = undefined;
+    previousDescription = undefined;
+  }
+
+  function showError(message, field) {
+    error.hidden = false;
+    error.textContent = message;
+    if (!field) return;
+    invalidField = field;
+    previousDescription = field.getAttribute('aria-describedby');
+    field.setAttribute('aria-describedby', [previousDescription, error.id].filter(Boolean).join(' '));
+    field.setAttribute('aria-invalid', 'true');
+    field.focus();
+  }
+
+  form.addEventListener('input', clearError);
+  form.addEventListener('submit', async event => {
+    event.preventDefault();
+    if (!available || !context || sending || sent) return;
+    clearError();
+    const buyer = { name: name.value.trim(), email: email.value.trim(), phone: phone.value.trim() };
+    const invalid = validateBuyer(buyer, context.criteria.contactPreference) ??
+      (email.validity.typeMismatch ? { field: 'email', message: 'Enter a valid email address.' } : null);
+    if (invalid) {
+      showError(invalid.message, form.elements.namedItem(invalid.field));
+      return;
+    }
+
+    const content = { version: 1, buyer, ...context, website: website.value };
+    const key = JSON.stringify(content);
+    if (lastRequest?.key !== key) lastRequest = { key, id: globalThis.crypto.randomUUID() };
+    const payload = { ...content, submissionId: lastRequest.id };
+
+    sending = true;
+    button.disabled = true;
+    form.setAttribute('aria-busy', 'true');
+    fields.disabled = true;
+    if (editButton) editButton.disabled = true;
+    button.textContent = 'Sending…';
+    status.textContent = 'Sending your buyer brief…';
+
+    const outcome = await postInquiry(endpoint, payload);
+
+    sending = false;
+    form.removeAttribute('aria-busy');
+    fields.disabled = false;
+    if (editButton) editButton.disabled = false;
+    button.disabled = false;
+    if (outcome === 'sent') {
+      sent = true;
+      lastRequest = undefined;
+      form.reset();
+      form.hidden = true;
+      status.textContent = 'Buyer brief sent. Greece Properties can reply using the contact details you provided.';
+      status.focus();
+      return;
+    }
+    status.textContent = '';
+    button.textContent = 'Try sending again';
+    showError(errorMessages[outcome]);
+    button.focus();
+  });
+
+  return async (criteria, results) => {
+    const updated = {
+      criteria,
+      matches: propertyReferences(results.matches),
+      nearMatches: propertyReferences(results.near)
+    };
+    const key = JSON.stringify(updated);
+    if (key !== contextKey) {
+      context = updated;
+      contextKey = key;
+      lastRequest = undefined;
+      sent = false;
+      status.textContent = '';
+      clearError();
+      button.textContent = 'Send my buyer brief';
+    }
+    phone.required = phoneMethods.has(normalize(criteria.contactPreference));
+    phoneLabel.textContent = phone.required ? 'Phone number (required)' : 'Phone number (optional)';
+    if (available) {
+      form.hidden = sent;
+      button.disabled = false;
+      return;
+    }
+    if (checking) return;
+    checking = true;
+    status.textContent = 'Checking whether briefs can be sent…';
+    available = await checkInquiryAvailability(endpoint);
+    checking = false;
+    form.hidden = !available;
+    button.disabled = !available;
+    status.textContent = available ? '' : 'Sending is currently unavailable. You can still copy or download your brief.';
+  };
+}
+
 function localUrl(value) {
   if (typeof value !== 'string' || !value.trim()) return null;
   try {
@@ -239,14 +461,13 @@ function initFinder(root) {
   const matches = root.querySelector('[data-match-list]');
   const near = root.querySelector('[data-near-list]');
   const status = root.querySelector('[data-finder-status]');
-  const emailButton = root.querySelector('[data-email-profile]');
+  const editButton = root.querySelector('[data-edit-profile]');
   const budgetWrapper = root.querySelector('[data-budget-amount]');
-  const email = root.dataset.email?.trim() ?? '';
-  const emailEnabled = root.dataset.mode === 'live' && /^[^\s?&#@]+@[a-z0-9.-]+\.[a-z]+$/i.test(email);
   const properties = readProperties();
 
   if (!form || steps.length !== 4 || !results || !profile || !back || !next ||
       !resultsSummary || !matches || !near) return;
+  const showInquiry = setupInquiry(root, editButton);
 
   const controls = [...form.elements];
   const named = name => controls.filter(control => control.name === name);
@@ -410,6 +631,7 @@ function initFinder(root) {
     readyProfile = formatProfile(criteria, ranked);
     profile.value = readyProfile;
     profile.readOnly = true;
+    showInquiry?.(criteria, ranked);
     if (status) status.textContent = '';
     form.hidden = true;
     results.hidden = false;
@@ -431,7 +653,7 @@ function initFinder(root) {
   });
 
   back.addEventListener('click', () => { if (stepIndex > 0) showStep(stepIndex - 1); });
-  root.querySelector('[data-edit-profile]')?.addEventListener('click', () => showStep(0));
+  editButton?.addEventListener('click', () => showStep(0));
 
   root.querySelector('[data-copy-profile]')?.addEventListener('click', async () => {
     if (!readyProfile) return;
@@ -457,19 +679,6 @@ function initFinder(root) {
     window.setTimeout(() => URL.revokeObjectURL(url), 1000);
     if (status) status.textContent = 'Download requested.';
   });
-
-  if (emailButton) {
-    emailButton.hidden = !emailEnabled;
-    if (emailEnabled) {
-      emailButton.addEventListener('click', () => {
-        if (!readyProfile) return;
-        if (status) status.textContent = 'Opening your email app. Review the draft before sending.';
-        const subject = encodeURIComponent('Greece Properties · Buyer brief');
-        const body = encodeURIComponent(readyProfile.toWellFormed().replaceAll('\n', '\r\n'));
-        window.location.href = 'mailto:' + email + '?subject=' + subject + '&body=' + body;
-      });
-    }
-  }
 
   updateBudget();
   updatePriorities();
