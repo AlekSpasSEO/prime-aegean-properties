@@ -4,6 +4,10 @@ if (filters) {
   const cards = [...document.querySelectorAll('[data-property]')];
   const count = document.querySelector('#result-count');
   const empty = document.querySelector('.empty-state');
+  const emptyDescription = empty.querySelector('[data-empty-description]');
+  const heading = document.querySelector('#properties-title');
+  const featureLinks = [...document.querySelectorAll('[data-feature-link]')];
+  const availableFeatures = new Set(cards.flatMap(card => card.dataset.tags.split('|')));
   const clear = document.querySelector('#clear-filters');
   const advanced = filters.querySelector('.advanced-filters');
   const normalize = value => value.toLowerCase().normalize('NFD').replace(/\p{Diacritic}/gu,'');
@@ -23,7 +27,15 @@ if (filters) {
       if(ok) matches++;
     }
     count.textContent = matches === 1 ? '1 property' : matches + ' properties';
+    heading.textContent = values.tag ? 'Results for “' + values.tag + '”' : heading.dataset.defaultHeading;
+    for (const link of featureLinks) {
+      if (link.dataset.featureLink === values.tag) link.setAttribute('aria-current','true');
+      else link.removeAttribute('aria-current');
+    }
     empty.hidden = matches > 0;
+    emptyDescription.textContent = values.tag && !availableFeatures.has(values.tag)
+      ? 'No current listings are tagged “' + values.tag + '”.'
+      : 'Try a broader location, a higher budget, or a different feature.';
     clear.hidden = !Object.values(values).some(Boolean);
     if (updateURL) {
       const url = new URL(location.href);
