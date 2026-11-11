@@ -5,6 +5,7 @@ if (filters) {
   const count = document.querySelector('#result-count');
   const empty = document.querySelector('.empty-state');
   const clear = document.querySelector('#clear-filters');
+  const advanced = filters.querySelector('.advanced-filters');
   const normalize = value => value.toLowerCase().normalize('NFD').replace(/\p{Diacritic}/gu,'');
   const apply = (updateURL = false, replace = false) => {
     const values = Object.fromEntries(Object.entries(inputs).map(([key,el])=>[key,el.value.trim()]));
@@ -12,7 +13,12 @@ if (filters) {
     let matches = 0;
     for (const card of cards) {
       const data = card.dataset;
-      const ok = words.every(w => normalize(data.terms).includes(w)) && (!values.type || values.type === data.type) && (!values.price || Number(data.price) <= Number(values.price)) && (!values.beds || Number(data.beds) >= Number(values.beds));
+      const ok = words.every(w => normalize(data.terms).includes(w)) &&
+        (!values.region || values.region === data.region) &&
+        (!values.type || values.type === data.type) &&
+        (!values.tag || (data.tags??'').split('|').includes(values.tag)) &&
+        (!values.price || (data.price !== '' && Number(data.price) <= Number(values.price))) &&
+        (!values.beds || (data.beds !== '' && Number(data.beds) >= Number(values.beds)));
       card.hidden = !ok;
       if(ok) matches++;
     }
@@ -31,6 +37,7 @@ if (filters) {
       const value = params.get(key) ?? '';
       el.value = el.tagName === 'SELECT' && ![...el.options].some(o=>o.value===value) ? '' : value;
     }
+    if (advanced && ['type','beds','tag'].some(key=>inputs[key]?.value)) advanced.open = true;
     apply();
   };
   const reset = () => {
