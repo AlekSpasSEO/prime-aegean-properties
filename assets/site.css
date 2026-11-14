@@ -82,6 +82,9 @@
 .dedicated-search {
   padding-bottom: 3.5rem;
 }
+.detail-body-without-facts {
+  margin-top: 2.5rem;
+}
 @media(max-width:590px) {
   .feature-picker .property-tags a { min-height: 34px; }
   .dedicated-search { padding-bottom: 2.6rem; }
