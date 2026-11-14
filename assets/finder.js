@@ -17,6 +17,28 @@ function numberOrUnknown(value) {
   return Number.isFinite(number) ? number : null;
 }
 
+function readPriceParameter(value) {
+  if (!value || !/^\d{1,10}$/u.test(value)) return null;
+  const amount = Number(value);
+  return amount >= 1 && amount <= 1_000_000_000 ? amount : null;
+}
+
+export function readSearchPreferences(search, options) {
+  const params = new URLSearchParams(search);
+  const allowed = (name, values) => {
+    const value = params.get(name);
+    return value && values.includes(value) ? value : '';
+  };
+  return {
+    region: allowed('region', options.regions),
+    type: allowed('type', options.types),
+    minBudget: readPriceParameter(params.get('minPrice')),
+    maxBudget: readPriceParameter(params.get('maxPrice')),
+    beds: allowed('beds', options.beds),
+    must: [...new Set(params.getAll('tag').filter(tag => options.tags.includes(tag)))]
+  };
+}
+
 function areaValues(property) {
   return [property.region, property.location]
     .filter(Boolean)
@@ -58,10 +80,13 @@ function assess(property, criteria) {
     else different.push(property.type + ' differs from your selected type');
   }
 
-  if (criteria.maxBudget !== null) {
+  if (criteria.minBudget !== null || criteria.maxBudget !== null) {
     if (price === null) unverified.push('Asking price');
-    else if (price <= criteria.maxBudget) confirmed.push(euro.format(price) + ' is within budget');
-    else different.push(euro.format(price - criteria.maxBudget) + ' above your maximum budget');
+    else if (criteria.minBudget !== null && price < criteria.minBudget) {
+      different.push(euro.format(criteria.minBudget - price) + ' below your minimum price');
+    } else if (criteria.maxBudget !== null && price > criteria.maxBudget) {
+      different.push(euro.format(price - criteria.maxBudget) + ' above your maximum budget');
+    } else confirmed.push(euro.format(price) + ' is within budget');
   }
 
   if (criteria.minBedrooms > 0) {
@@ -86,6 +111,7 @@ export function findProperties(properties, criteria) {
   const normalized = {
     areas: criteria.areas ?? [],
     type: normalize(criteria.type) === 'any' ? '' : criteria.type,
+    minBudget: numberOrUnknown(criteria.minBudget),
     maxBudget: numberOrUnknown(criteria.maxBudget),
     minBedrooms: numberOrUnknown(criteria.minBedrooms),
     must: criteria.must ?? [],
@@ -127,7 +153,8 @@ export function formatProfile(criteria, results) {
     'Intended use: ' + criteria.use,
     'Preferred areas: ' + (criteria.areas.join(', ') || 'Open to any area'),
     'Property type: ' + (criteria.type || 'Open to any type'),
-    'Maximum budget: ' + (criteria.maxBudget === null ? 'Flexible' : euro.format(criteria.maxBudget)),
+    ...(criteria.minBudget != null ? ['Minimum price: ' + euro.format(criteria.minBudget)] : []),
+    'Maximum budget: ' + (criteria.maxBudget == null ? 'Flexible' : euro.format(criteria.maxBudget)),
     'Minimum bedrooms: ' + (criteria.minBedrooms || 'Flexible'),
     'Must-have features: ' + (criteria.must.join(', ') || 'None selected'),
     'Nice-to-have features: ' + (criteria.nice.join(', ') || 'None selected'),
@@ -463,6 +490,7 @@ function initFinder(root) {
   const status = root.querySelector('[data-finder-status]');
   const editButton = root.querySelector('[data-edit-profile]');
   const budgetWrapper = root.querySelector('[data-budget-amount]');
+  const searchPrefsNote = root.querySelector('[data-search-prefs]');
   const properties = readProperties();
 
   if (!form || steps.length !== 4 || !results || !profile || !back || !next ||
@@ -484,6 +512,43 @@ function initFinder(root) {
     return control.selectedOptions?.[0]?.textContent.trim() ||
       control.dataset.label || control.labels?.[0]?.textContent.trim() || control.value;
   };
+
+  function prefillFromSearch() {
+    const options = name => [...(first(name)?.options ?? [])].map(option => option.value);
+    const preferences = readSearchPreferences(location.search, {
+      regions: named('area').map(control => control.value),
+      types: options('type'),
+      beds: options('beds'),
+      tags: named('must').map(control => control.value)
+    });
+
+    if (preferences.region) named('area').find(control => control.value === preferences.region).checked = true;
+    if (preferences.type) first('type').value = preferences.type;
+    if (preferences.beds) first('beds').value = preferences.beds;
+    if (preferences.minBudget !== null) first('min-budget').value = String(preferences.minBudget);
+    if (preferences.maxBudget !== null) first('budget').value = String(preferences.maxBudget);
+
+    if (preferences.minBudget !== null || preferences.maxBudget !== null) {
+      const mode = preferences.maxBudget === null ? 'flexible' : 'maximum';
+      named('budget-mode').find(control => control.value === mode).checked = true;
+    }
+    const selectedTags = new Set(preferences.must);
+    for (const control of named('must')) {
+      if (!selectedTags.has(control.value)) continue;
+      control.checked = true;
+      const disclosure = control.closest('details');
+      if (disclosure) disclosure.open = true;
+    }
+
+    const carried = preferences.region || preferences.type || preferences.beds ||
+      preferences.minBudget !== null || preferences.maxBudget !== null || selectedTags.size;
+    if (carried && searchPrefsNote) {
+      searchPrefsNote.hidden = false;
+      searchPrefsNote.textContent = selectedTags.size
+        ? 'We carried over your search filters. Features from search start as must-haves. You can change these answers.'
+        : 'We carried over your search filters. You can change these answers.';
+    }
+  }
 
   const errors = steps.map((step, index) => {
     const region = step.querySelector('[data-step-error]') || element('p', '', 'finder-step-error');
@@ -568,16 +633,19 @@ function initFinder(root) {
 
     if (stepIndex === 1) {
       const mode = choice('budget-mode');
-      const amount = numberOrUnknown(choice('budget'));
+      const minimum = choice('min-budget');
+      const maximum = choice('budget');
+      const lowerBound = readPriceParameter(minimum);
+      const upperBound = readPriceParameter(maximum);
       if (!mode) return reject('budget-mode', 'Set a maximum budget or choose a flexible budget.');
-      if (mode === 'maximum') {
-        if (!Number.isSafeInteger(amount) || amount < 1) {
-          return reject('budget', 'Enter a whole euro amount of €1 or more.');
-        }
-        const limit = numberOrUnknown(first('budget')?.max);
-        if (limit !== null && amount > limit) {
-          return reject('budget', 'Enter a maximum budget of ' + euro.format(limit) + ' or less.');
-        }
+      if (first('min-budget')?.validity?.badInput || (minimum && lowerBound === null)) {
+        return reject('min-budget', 'Enter a whole euro amount between €1 and €1 billion, or leave the minimum blank.');
+      }
+      if (mode === 'maximum' && upperBound === null) {
+        return reject('budget', 'Enter a maximum price in whole euros between €1 and €1 billion.');
+      }
+      if (mode === 'maximum' && lowerBound !== null && lowerBound > upperBound) {
+        return reject('min-budget', 'The minimum price must be at or below the maximum price.');
       }
     }
 
@@ -597,7 +665,8 @@ function initFinder(root) {
       use: display('use'),
       areas: checked('area'),
       type: normalize(choice('type')) === 'any' ? '' : type,
-      maxBudget: choice('budget-mode') === 'maximum' ? numberOrUnknown(choice('budget')) : null,
+      minBudget: readPriceParameter(choice('min-budget')),
+      maxBudget: choice('budget-mode') === 'maximum' ? readPriceParameter(choice('budget')) : null,
       minBedrooms: numberOrUnknown(choice('beds')),
       must: checked('must'),
       nice: checked('nice'),
@@ -680,6 +749,7 @@ function initFinder(root) {
     if (status) status.textContent = 'Download requested.';
   });
 
+  prefillFromSearch();
   updateBudget();
   updatePriorities();
   showStep(0, false);
