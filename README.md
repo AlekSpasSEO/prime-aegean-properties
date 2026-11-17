@@ -1,5 +1,7 @@
 # Greece Properties
 
-A static website preview with 15 properties, area browsing, a two-handle price filter, multiple feature filters, a four-step property finder and a four-part guide to buying a home in Greece.
+Public website: https://grspiti.com/
 
-GitHub Pages serves the generated HTML, CSS, JavaScript and photographs from the root of main. The preview is marked noindex and does not send inquiries. The finder runs in the browser and lets visitors review, copy or download their buyer brief.
+Generated static catalogue with regional photography, property search, listing galleries and browser-local buyer briefs. The catalogue remains in review mode while missing listing energy ratings are confirmed. Viewing requests and automatic buyer-brief delivery are closed.
+
+Photography credits: https://grspiti.com/photo-credits/

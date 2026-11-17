@@ -282,3 +282,27 @@
   .search-feature-group label { min-height: 44px; }
 }
 
+
+/* Editorial photographs: regions and category discovery. */
+.quick-search .category-photo-card { position:relative; display:grid; grid-template-columns:minmax(0,1fr) auto; gap:0; padding:0; overflow:hidden; align-items:center; }
+.category-photo-card .category-photo { grid-column:1/-1; width:100%; height:160px; overflow:hidden; background:var(--soft); }
+.category-photo img { width:100%; height:100%; object-fit:cover; transition:transform .3s ease; }
+.category-photo-card:hover .category-photo img { transform:scale(1.035); }
+.category-photo-card .category-label { padding:.9rem 1rem; }
+.quick-search .category-photo-card > svg { margin-right:1rem; }
+.category-image-note { font-size:.74rem; margin:0 0 1.1rem; }
+.photo-place { font-size:.73rem!important; color:var(--muted); }
+.photo-credits-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:2rem; padding-bottom:4rem; }
+.photo-credit { min-width:0; }
+.photo-credit img { width:100%; height:260px; object-fit:cover; border-radius:7px; }
+.photo-credit h2 { font-size:1.5rem; margin:.8rem 0 .5rem; }
+.photo-credit p { font-size:.88rem; margin:.3rem 0; }
+.photo-credit a { text-decoration:underline; text-underline-offset:3px; }
+@media(max-width:590px) {
+  .category-photo-card .category-photo { height:100px; }
+  .category-photo-card .category-label { padding:.65rem .5rem; }
+  .quick-search .category-photo-card > svg { display:none; }
+  .photo-credits-grid { grid-template-columns:1fr; gap:1.4rem; }
+  .hero-caption { max-width:calc(100% - 1.5rem); font-size:.68rem; }
+}
+@media(prefers-reduced-motion:reduce) { .category-photo img { transition:none; } }
